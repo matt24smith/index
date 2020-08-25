@@ -5,8 +5,9 @@ import sqlite3
 from hashlib import md5
 from multiprocessing import Pool
 from datetime import datetime, timedelta
+from collections.abc import Iterable
 
-import numpy as np
+from numpy import arange
 
 
 class Spinbin():
@@ -27,7 +28,7 @@ class Spinbin():
     # compute 8-bit integer hash for a given dictionary
     hash_dict = lambda self, kwargs, seed='': int(md5((str(seed) + json.dumps(kwargs, sort_keys=True, default=str)).encode('utf-8')).hexdigest(), base=16) >> 80
 
-    def __init__(self, *, dx=2, dy=2, dz=5000, dt=timedelta(days=1), storagedir=os.getcwd(), inmemory=False, bins=True, **kwargs): 
+    def __init__(self, /, *, dx=2, dy=2, dz=5000, dt=timedelta(days=1), storagedir=os.getcwd(), inmemory=False, bins=True, **kwargs): 
         """
             args:
                 dx:
@@ -43,7 +44,7 @@ class Spinbin():
                **kwargs:
                     boundary arguments
         """
-        assert os.path.isdir(storagedir)
+        assert os.path.isdir(str(storagedir)), f'invalid dir {storagedir}'
         assert kwargs != {} or bins == False, 'no boundaries provided'
 
         self.storagedir, self.inmemory = storagedir, inmemory
@@ -61,10 +62,10 @@ class Spinbin():
         assert not self.inmemory, 'feature not yet implemented'  
         return self
 
-    def __call__(self, /, *, callback, **passkwargs):  # https://docs.python.org/3/whatsnew/3.8.html
-        return list(self.__call_generator__(callback, **passkwargs))
+    def __call__(self, /, *, callback,  **passkwargs):  # https://docs.python.org/3/whatsnew/3.8.html
+        return list(self.__call_generator__(callback=callback, **passkwargs))
 
-    def __call_generator__(self, callback, **passkwargs):
+    def __call_generator__(self, /, *, callback, **passkwargs):
         seed=f'{callback.__module__}.{callback.__name__}:{json.dumps(passkwargs, default=str, sort_keys=True)}'
         for kwargs in self.kwargslist: 
             if not self.serialized(kwargs, seed): self.insert_hash(kwargs, seed, callback(**passkwargs, **kwargs))
@@ -116,7 +117,8 @@ class Spinbin():
             yields: 
                 dictionary containing args as a subset of input boundaries
         """
-        binsize = lambda ax, delta, bound: ax - (ax % (delta * -bound))
+
+        spacebins = lambda a, b, delta: arange(min(a,b)-(min(a,b)%(delta*1)), max(a,b)-(max(a,b)%(delta*-1)), delta)
 
         for axmin, axmax, delta in zip(('west','south','top','start',), ('east','north','bottom','end'), (dx,dy,dz,dt)): 
             if axmin not in kwargs.keys(): kwargs[axmin] = 0
@@ -124,17 +126,17 @@ class Spinbin():
             if min(kwargs[axmin],kwargs[axmax]) == max(kwargs[axmin],kwargs[axmax]): kwargs[axmax] += delta
 
         # spin to win!
-        for x in np.arange(binsize(kwargs['west'], dx, -1), binsize(kwargs['east'], dx, +1), dx):
-            for y in np.arange(binsize(kwargs['south'], dy, -1), binsize(kwargs['north'], dy, +1), dy):
-                for z in np.arange(binsize(min(kwargs['top'], kwargs['bottom']), dz, -1), binsize(max(kwargs['top'], kwargs['bottom']), dz, +1), dz):
-                    for t in np.arange(kwargs['start'].date(), kwargs['end'], dt).astype(datetime):
+        for x in spacebins(kwargs['west'], kwargs['east'], dx):
+            for y in spacebins(kwargs['south'], kwargs['north'], dy): 
+                for z in spacebins(kwargs['top'], kwargs['bottom'], dz):
+                    for t in arange(kwargs['start'].date(), kwargs['end'], dt).astype(datetime):
                         yield dict(zip(('west', 'east', 'south', 'north', 'top', 'bottom', 'start', 'end',), (x, x+dx, y, y+dy, z, z+dz, t, t+dt,)))
 
 
 class ParallelSpinbin(Spinbin):
     """ run spinbin jobs in a parallel processing pool """
 
-    def __init__(self, *, pool=1, dx=2, dy=2, dz=5000, dt=timedelta(days=1), storagedir=os.getcwd(), inmemory=False, bins=True, **kwargs): 
+    def __init__(self, /, *, pool=1, dx=2, dy=2, dz=5000, dt=timedelta(days=1), storagedir=os.getcwd(), inmemory=False, bins=True, **kwargs): 
         """
             args:
                 dx:
@@ -153,7 +155,7 @@ class ParallelSpinbin(Spinbin):
         assert os.path.isdir(storagedir)
         assert kwargs != {} or bins == False, 'no boundaries provided'
 
-        self.pool, self.storagedir, self.inmemory, = pool, storagedir, geospatial processing job schedulerinmemory
+        self.pool, self.storagedir, self.inmemory, = pool, storagedir, inmemory
         self.storage = os.path.join(storagedir, 'checksums.db') if not inmemory else ':memory:'
         self.kwargslist = list(self.bin_kwargs(dx, dy, dz, dt, **kwargs)) if bins else [kwargs]
 
@@ -179,15 +181,15 @@ if __name__ == '__main__':
         run demo again to quickly load cached results
 
         >   python3.8 spinbin.py 
-
     """
+
     import time
 
     def callback(**kwargs):
         """ demo: some arbitrary slow process that accepts space/time boundaries as args """
         print(f'hello world! i am alive!\n{json.dumps(kwargs, default=str, indent=1)}')
         time.sleep(0.5)
-        return datetime.now()
+        return str(datetime.now().time())
 
     def parallelized_callback(**kwargs):
         """ another useless demo function """
