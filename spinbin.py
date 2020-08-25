@@ -173,12 +173,12 @@ if __name__ == '__main__':
     """ run the demo to split boundary arguments into smaller areas, 
         then log the results of each function call
 
-        >   python3 spinbin.py 
+        >   python3.8 spinbin.py 
 
 
         run demo again to quickly load cached results
 
-        >   python3 spinbin.py 
+        >   python3.8 spinbin.py 
 
     """
     import time
