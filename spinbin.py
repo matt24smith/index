@@ -173,6 +173,8 @@ class ParallelSpinbin(Spinbin):
         elif self.inmemory: self.update_hash(kwargs, seed, callback(**passkwargs, **kwargs))
         return pickle.loads(self.serialized(kwargs, seed))
 
+                      
+                      
 
 if __name__ == '__main__':
     """ run the demo to split boundary arguments into smaller areas, 
