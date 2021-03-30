@@ -11,11 +11,11 @@ from collections.abc import Iterable
 from numpy import arange
 
 
-class Spinbin():
+class index():
     """ job scheduler utility featuring:
             - spatial hashing, indexing, and binning for spatial processing
             - in-memory caching for arbitrary binary objects
-            - parallel process management (see inherited: ParallelSpinbin)
+            - parallel process management (see inherited: parallelindex)
     
         intended to be a lightweight utility for hashmap-like boolean 
         indexing on function calls, performant storage of in-memory binary 
@@ -29,12 +29,12 @@ class Spinbin():
     # compute 8-bit integer hash for a given dictionary
     hash_dict = lambda self, kwargs, seed='': int(md5((str(seed) + json.dumps(kwargs, sort_keys=True, default=str)).encode('utf-8')).hexdigest(), base=16) >> 80
 
-    def __init__(self, /, *, pool=1, store=False, inmemory=False, bins=True, dx=2, dy=2, dz=5000, dt=timedelta(days=1), storagedir=os.getcwd(), **kwargs): 
+    def __init__(self, /, *, pool=1, store=False, inmemory=False, bins=True, dx=2, dy=2, dz=5000, dt=timedelta(days=1), storagedir=os.getcwd(), filename='checksums.db', **kwargs): 
         """
             args:
                 pool:
                     number of processes to run in parallel. when not using the
-                    ParallelSpinbin subclass, this must be equal to 1.
+                    parallelindex subclass, this must be equal to 1.
                 store:
                     determines whether to store the results of the callback.
                     when False, no binary will be serialized. only a hash of the 
@@ -65,9 +65,8 @@ class Spinbin():
         """
         assert kwargs != {} or bins == False, 'no boundaries provided'
         self.store, self.pool, self.storagedir, self.inmemory, = store, pool, storagedir, inmemory
-        self.storage = os.path.join(storagedir, 'checksums.db') if not inmemory else ':memory:'
+        self.storage = os.path.join(storagedir, filename) if not inmemory else ':memory:'
         self.kwargslist = list(self.bin_kwargs(dx, dy, dz, dt, **kwargs)) if bins else [kwargs]
-        #breakpoint()
 
     def __enter__(self):
         assert self.kwargslist != [], 'empty kwargs!'
@@ -87,7 +86,7 @@ class Spinbin():
 
     def __call_generator__(self, /, *, callback, **passkwargs):
         seed=f'{callback.__module__}.{callback.__name__}:{json.dumps(passkwargs, default=str, sort_keys=True)}'
-        assert self.pool == 1, 'use ParallelSpinbin for processing pool'
+        assert self.pool == 1, 'use parallelindex for processing pool'
         for kwargs in self.kwargslist: 
             if not self.serialized(kwargs, seed): self.insert_hash(kwargs, seed, callback(**passkwargs, **kwargs))
             elif self.inmemory: self.update_hash(kwargs, seed, callback(**passkwargs, **kwargs))
@@ -100,13 +99,13 @@ class Spinbin():
         assert not self.inmemory, 'feature not yet implemented'  
 
     def insert_hash(self, kwargs={}, seed='', obj=None):
-        logging.debug(f'INSERTING SPATIAL HASH {self.hash_dict(kwargs, seed)}\n{seed = }\nBIN: {kwargs = }')
+        logging.debug(f'INSERT HASH {self.hash_dict(kwargs, seed)}\n{seed = }\nBIN: {kwargs = }')
         with sqlite3.connect(self.storage) as con:
             db = con.cursor()
             db.execute('INSERT INTO hashmap VALUES (?,?)', (self.hash_dict(kwargs, seed), bytes(pickle.dumps(obj) if self.store else pickle.dumps(None))))
 
     def update_hash(self, kwargs={}, seed='', obj=None):
-        logging.debug(f'UPDATING SPATIAL HASH {self.hash_dict(kwargs, seed)}\n{seed = }\nBIN: {kwargs = }')
+        logging.debug(f'UPDATE HASH {self.hash_dict(kwargs, seed)}\n{seed = }\nBIN: {kwargs = }')
         with sqlite3.connect(self.storage) as con:
             db = con.cursor()
             db.execute('UPDATE hashmap SET bytes = ? WHERE hash = ?', (pickle.dumps(obj), self.hash_dict(kwargs, seed)))
@@ -117,7 +116,7 @@ class Spinbin():
             db = con.cursor()
             db.execute('SELECT * FROM hashmap WHERE hash == ?', (self.hash_dict(kwargs, seed),))
             res = db.fetchone()
-        logging.debug(f'CHECKING SPATIAL HASH {self.hash_dict(kwargs, seed)}: {"HIT!" if res is not None else "MISS!" }\n{seed = }\nBIN: {kwargs = }')
+        logging.debug(f'CHECK HASH {self.hash_dict(kwargs, seed)}: {"exists!" if res is not None else "missing!" }\n{seed = }\nBIN: {kwargs = }')
         if res is None: return False
         if res[1] is None: return True
         if res[1] is not None: return res[1]
@@ -158,10 +157,10 @@ class Spinbin():
                         yield dict(zip(('west', 'east', 'south', 'north', 'top', 'bottom', 'start', 'end',), (x, x+dx, y, y+dy, z, z+dz, t, t+dt,)))
 
 
-class ParallelSpinbin(Spinbin):
-    """ run spinbin jobs in a parallel processing pool """
+class parallelindex(index):
+    """ run index jobs in a parallel processing pool """
 
-    def __call__(self, /, *, callback, **passkwargs):  # https://docs.python.org/3/whatsnew/3.8.html
+    def __call__(self, /, *, callback, **passkwargs):
         assert len(self.kwargslist) > 1, 'nothing to parallelize when bins=False'
         with Pool(self.pool) as p: 
             return list(p.map(self.__call_generator__, zip((callback for _ in self.kwargslist), self.kwargslist, (passkwargs for _ in self.kwargslist))))
@@ -173,31 +172,29 @@ class ParallelSpinbin(Spinbin):
         elif self.inmemory: self.update_hash(kwargs, seed, callback(**passkwargs, **kwargs))
         return pickle.loads(self.serialized(kwargs, seed))
 
-                      
-                      
 
 if __name__ == '__main__':
     """ run the demo to split boundary arguments into smaller areas, 
         then log the results of each function call
 
-        >   python3.8 spinbin.py 
+        >   python3.8 index.py 
 
 
         run demo again to quickly load cached results
 
-        >   python3.8 spinbin.py 
+        >   python3.8 index.py 
     """
     import time
 
     def callback(**kwargs):
         """ demo: some arbitrary slow process that accepts space/time boundaries as args """
-        print(f'hello world! i am alive!\n{json.dumps(kwargs, default=str, indent=1)}')
+        print(f'hello world!\n{json.dumps(kwargs, default=str, indent=1)}')
         time.sleep(0.5)
         return str(datetime.now().time())
 
     def parallelized_callback(**kwargs):
         """ another useless demo function """
-        print(f'hello world! i am parallel! {kwargs = }')
+        print(f'hello world! {kwargs = }')
         time.sleep(1)
         return None
 
@@ -211,12 +208,12 @@ if __name__ == '__main__':
         }
 
     # here kwargs will split into 21 function calls using default spatial bin sizes
-    with Spinbin(bins=True, store=True, inmemory=False, **kwargs) as scheduler: 
+    with index(bins=True, store=True, inmemory=False, **kwargs) as scheduler: 
         results = scheduler(callback=callback, testarg='some arg', anotherarg='changing this will invalidate results hash')
 
     print(results)
 
     # and again, but this time in parallel
-    with ParallelSpinbin(pool=10, **kwargs) as scheduler: 
+    with parallelindex(pool=10, **kwargs) as scheduler: 
         scheduler(callback=parallelized_callback, newargument='yerp')
 
