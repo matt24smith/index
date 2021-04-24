@@ -67,6 +67,7 @@ class index():
         self.store, self.pool, self.storagedir, self.inmemory, = store, pool, storagedir, inmemory
         self.storage = os.path.join(storagedir, filename) if not inmemory else ':memory:'
         self.kwargslist = list(self.bin_kwargs(dx, dy, dz, dt, **kwargs)) if bins else [kwargs]
+        logging.debug(f'storing checksums in {self.storage}')
 
     def __enter__(self):
         assert self.kwargslist != [], 'empty kwargs!'
@@ -85,7 +86,8 @@ class index():
         return list(self.__call_generator__(callback=callback, **passkwargs))
 
     def __call_generator__(self, /, *, callback, **passkwargs):
-        seed=f'{callback.__module__}.{callback.__name__}:{json.dumps(passkwargs, default=str, sort_keys=True)}'
+        #seed=f'{callback.__module__}.{callback.__name__}:{json.dumps(passkwargs, default=str, sort_keys=True)}'
+        seed=f'{json.dumps(passkwargs, default=str, sort_keys=True)}'
         assert self.pool == 1, 'use parallelindex for processing pool'
         for kwargs in self.kwargslist: 
             if not self.serialized(kwargs, seed): self.insert_hash(kwargs, seed, callback(**passkwargs, **kwargs))
