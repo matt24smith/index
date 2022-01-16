@@ -4,12 +4,10 @@ import os
 import json
 import pickle
 import sqlite3
-#import pysqlite3 as sqlite3
 import logging
 from hashlib import md5
 from multiprocessing import Pool
 from datetime import datetime, timedelta
-from collections.abc import Iterable
 
 from numpy import arange
 
@@ -19,7 +17,7 @@ class index():
 
         An SQL database for caching arbitrary binary.  Intended to be used as a
         wrapper for arbitrary function calls, where the result of the function
-        is stored as a binary BLOB in the database. A hash of the function name,
+        is stored as a binary BLOB in the db. A hash of the function name,
         path, and input arguments will be interpreted as a 16-bit integer to be
         used as primary key on a clustered index.
 
@@ -30,54 +28,74 @@ class index():
         Example:
 
         >>> import os
-            import time
-            import json
-            from datetime import datetime, timedelta
+        >>> import time
+        >>> import json
+        >>> from datetime import datetime, timedelta
 
         >>> def callback(**kwargs):
-                print(f'hello from {os.getpid()}\\n{json.dumps(kwargs, default=str, indent=1)}')
-                time.sleep(0.5)
-                return str(datetime.now().time())
+        ...     print(f'hello from {os.getpid()}\\n{json.dumps(kwargs, default=str, indent=1)}')
+        ...     time.sleep(0.5)
+        ...     return str(datetime.now().time())
 
         >>> def parallelized_callback(**kwargs):
-                print(f'hello from {os.getpid()}\t{kwargs}')
-                time.sleep(1)
-                return None
+        ...     print(f'hello from {os.getpid()}\t{kwargs}')
+        ...     time.sleep(1)
+        ...     return None
 
 
-        >>> # define some boundaries using or subsetting these dict keys (only used when bins=True)
-            kwargs = {
-                    'west':    -123.45,     'east':    -110.01,
-                    'south':    43.21,      'north':    46.54,
-                    'bottom':   5000,       'top':      0,
-                    'start':    datetime(2000, 1, 1, 0, 0),
-                    'end':      datetime(2000, 1, 2, 0, 0)
-                    }
+        define some boundaries using or subsetting these dict keys
+        (only used when bins=True)
 
-        >>> # here kwargs will split into 21 function calls using default spatial bin sizes
-            with index(bins=True, store=True, inmemory=False, **kwargs) as scheduler:
-                results = scheduler(callback=callback, testarg='some arg', anotherarg='changing this will invalidate results hash')
-            print(results)
+        >>> kwargs = {
+        ...         'west':    -123.45,     'east':    -110.01,
+        ...         'south':    43.21,      'north':    46.54,
+        ...         'bottom':   5000,       'top':      0,
+        ...         'start':    datetime(2000, 1, 1, 0, 0),
+        ...         'end':      datetime(2000, 1, 2, 0, 0)
+        ...         }
 
-        >>> # and again, but this time in parallel
-            with parallelindex(pool=10, **kwargs) as scheduler:
-                scheduler(callback=parallelized_callback, newargument='test')
+        here kwargs will define 21 function calls using default
+        2-degree coordinate binning
 
+        >>> with index(bins=True, store=True, **kwargs) as scheduler:
+        ...     results = scheduler(callback=callback,
+        ...                         testarg='some arg',
+        ...                         anotherarg='args will salt hashes')
+        >>> print(results)
+
+        and again, but this time in parallel
+
+        >>> with parallelindex(pool=10, **kwargs) as scheduler:
+        ...     scheduler(callback=parallelized_callback, newargument='test')
     '''
 
     # each data blob in the database assumed to be uniquely described by a function
     # and its input arguments
     # seed used for hashing is a string representation of the function module path,
     # name, and optionally additional arguments
-    hash_seed = lambda self, callback, passkwargs={}: f'{callback.__module__}.{callback.__name__}:{json.dumps(passkwargs, default=str, sort_keys=True)}'
-
+    hash_seed = lambda self, callback, passkwargs={
+    }: f'{callback.__module__}.{callback.__name__}:{json.dumps(passkwargs, default=str, sort_keys=True)}'
 
     # compute 64-bit integer hash for a given dictionary
     # sqlite maxint: +/- (2^63)-1
-    hash_dict = lambda self, kwargs, seed='': (int(md5((str(seed) + json.dumps(kwargs, sort_keys=True, default=str)).encode('utf-8')).hexdigest(), base=16) >> 64) - (2**63) -1
+    hash_dict = lambda self, kwargs, seed='': (int(md5((str(seed) + json.dumps(
+        kwargs, sort_keys=True, default=str)).encode('utf-8')).hexdigest(),
+                                                   base=16) >> 64) - (2**63
+                                                                      ) - 1
 
-
-    def __init__(self, *, pool=1, store=False, inmemory=False, bins=True, dx=2, dy=2, dz=5000, dt=timedelta(days=1), storagedir=os.getcwd(), filename='checksums.db', **kwargs):
+    def __init__(self,
+                 *,
+                 pool=1,
+                 store=False,
+                 inmemory=False,
+                 bins=True,
+                 dx=2,
+                 dy=2,
+                 dz=5000,
+                 dt=timedelta(days=1),
+                 storagedir=os.getcwd(),
+                 filename='checksums.db',
+                 **kwargs):
         """
             args:
                 pool:
@@ -113,41 +131,51 @@ class index():
         """
         assert kwargs != {} or bins == False, 'no boundaries provided'
         self.store, self.pool, self.storagedir, self.inmemory, = store, pool, storagedir, inmemory
-        self.storage = os.path.join(storagedir, filename) if not inmemory else ':memory:'
-        self.kwargslist = list(self.bin_kwargs(dx, dy, dz, dt, **kwargs)) if bins else [kwargs]
-
+        self.storage = os.path.join(storagedir,
+                                    filename) if not inmemory else ':memory:'
+        self.kwargslist = list(self.bin_kwargs(dx, dy, dz, dt, **
+                                               kwargs)) if bins else [kwargs]
 
     def __enter__(self):
         assert self.kwargslist != [], 'empty kwargs!'
         assert os.path.isdir(str(self.storagedir)), f'invalid dir {storagedir}'
         with sqlite3.connect(self.storage) as con:
             db = con.cursor()
-            db.execute('CREATE TABLE IF NOT EXISTS hashmap(hash INTEGER PRIMARY KEY, bytes BLOB) WITHOUT ROWID;')
+            db.execute(
+                'CREATE TABLE IF NOT EXISTS hashmap(hash INTEGER PRIMARY KEY, bytes BLOB) WITHOUT ROWID;'
+            )
             #db.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_map on hashmap(hash)')
-            minval = (int(''.join(['0' for _ in range(32)]), base=16) >> 64) - (2**63)
-            maxval = (int(''.join(['f' for _ in range(32)]), base=16) >> 64) - (2**63)
-            db.execute('INSERT OR IGNORE INTO hashmap VALUES (?,?)', (minval, pickle.dumps(None)))
-            db.execute('INSERT OR IGNORE INTO hashmap VALUES (?,?)', (maxval, pickle.dumps(None)))
+            minval = (int(''.join(['0'
+                                   for _ in range(32)]), base=16) >> 64) - (2**
+                                                                            63)
+            maxval = (int(''.join(['f'
+                                   for _ in range(32)]), base=16) >> 64) - (2**
+                                                                            63)
+            db.execute('INSERT OR IGNORE INTO hashmap VALUES (?,?)',
+                       (minval, pickle.dumps(None)))
+            db.execute('INSERT OR IGNORE INTO hashmap VALUES (?,?)',
+                       (maxval, pickle.dumps(None)))
         # TODO:
         # if self.inmemory: copy disk database into memory
         # https://stackoverflow.com/questions/4019081/how-to-copy-a-sqlite-table-from-a-disk-database-to-a-memory-database-in-python
         assert not self.inmemory, 'feature not yet implemented'
         return self
 
-
-    def __call__(self, *, callback,  **passkwargs):
+    def __call__(self, *, callback, **passkwargs):
         return list(self.__call_generator__(callback=callback, **passkwargs))
-
 
     def __call_generator__(self, *, callback, **passkwargs):
         #seed=f'{callback.__module__}.{callback.__name__}:{json.dumps(passkwargs, default=str, sort_keys=True)}'
-        seed=self.hash_seed(callback, passkwargs)
+        seed = self.hash_seed(callback, passkwargs)
         assert self.pool == 1, 'use parallelindex for processing pool'
         for kwargs in self.kwargslist:
-            if not self.serialized(kwargs, seed): self.insert_hash(kwargs, seed, callback(**passkwargs, **kwargs))
-            elif self.inmemory: self.update_hash(kwargs, seed, callback(**passkwargs, **kwargs))
+            if not self.serialized(kwargs, seed):
+                self.insert_hash(kwargs, seed,
+                                 callback(**passkwargs, **kwargs))
+            elif self.inmemory:
+                self.update_hash(kwargs, seed,
+                                 callback(**passkwargs, **kwargs))
             yield pickle.loads(self.serialized(kwargs, seed))
-
 
     def __exit__(self, exc_type, exc_value, tb):
         # TODO:
@@ -155,39 +183,49 @@ class index():
         # https://stackoverflow.com/questions/4019081/how-to-copy-a-sqlite-table-from-a-disk-database-to-a-memory-database-in-python
         assert not self.inmemory, 'feature not yet implemented'
 
-
     def insert_hash(self, kwargs={}, seed='', obj=None):
-        logging.debug(f'INSERT HASH {self.hash_dict(kwargs, seed)}\nseed = {seed}\nBIN: kwargs = {kwargs}')
+        logging.debug(
+            f'INSERT HASH {self.hash_dict(kwargs, seed)}\nseed = {seed}\nBIN: kwargs = {kwargs}'
+        )
         with sqlite3.connect(self.storage) as con:
             db = con.cursor()
-            db.execute('INSERT INTO hashmap VALUES (?,?)', (self.hash_dict(kwargs, seed), bytes(pickle.dumps(obj) if self.store else pickle.dumps(None))))
-
+            db.execute(
+                'INSERT INTO hashmap VALUES (?,?)',
+                (self.hash_dict(kwargs, seed),
+                 bytes(
+                     pickle.dumps(obj) if self.store else pickle.dumps(None))))
 
     def update_hash(self, kwargs={}, seed='', obj=None):
-        logging.debug(f'UPDATE HASH {self.hash_dict(kwargs, seed)}\nseed = {seed }\nBIN: kwargs = {kwargs}')
+        logging.debug(
+            f'UPDATE HASH {self.hash_dict(kwargs, seed)}\nseed = {seed }\nBIN: kwargs = {kwargs}'
+        )
         with sqlite3.connect(self.storage) as con:
             db = con.cursor()
-            db.execute('UPDATE hashmap SET bytes = ? WHERE hash = ?', (pickle.dumps(obj), self.hash_dict(kwargs, seed)))
-
+            db.execute('UPDATE hashmap SET bytes = ? WHERE hash = ?',
+                       (pickle.dumps(obj), self.hash_dict(kwargs, seed)))
 
     def drop_hash(self, kwargs={}, seed=''):
-        logging.debug(f'DROP HASH {self.hash_dict(kwargs, seed)}\nseed = {seed }\nBIN: kwargs = {kwargs}')
+        logging.debug(
+            f'DROP HASH {self.hash_dict(kwargs, seed)}\nseed = {seed }\nBIN: kwargs = {kwargs}'
+        )
         with sqlite3.connect(self.storage) as con:
             db = con.cursor()
-            db.execute('DELETE FROM hashmap WHERE hash = ?', (self.hash_dict(kwargs, seed), ))
-
+            db.execute('DELETE FROM hashmap WHERE hash = ?',
+                       (self.hash_dict(kwargs, seed), ))
 
     def serialized(self, kwargs={}, seed=''):
         """ returns binary object or True if hash exists in database, else False """
         with sqlite3.connect(self.storage) as con:
             db = con.cursor()
-            db.execute('SELECT * FROM hashmap WHERE hash == ?', (self.hash_dict(kwargs, seed),))
+            db.execute('SELECT * FROM hashmap WHERE hash == ?',
+                       (self.hash_dict(kwargs, seed), ))
             res = db.fetchone()
-        logging.debug(f'CHECK HASH {self.hash_dict(kwargs, seed)}: {"exists!" if res is not None else "missing!" }\nseed = {seed}\nBIN: kwargs = {kwargs}')
+        logging.debug(
+            f'CHECK HASH {self.hash_dict(kwargs, seed)}: {"exists!" if res is not None else "missing!" }\nseed = {seed}\nBIN: kwargs = {kwargs}'
+        )
         if res is None: return False
         if res[1] is None: return True
         if res[1] is not None: return res[1]
-
 
     def bin_kwargs(self, dx, dy, dz, dt, **kwargs):
         """ generate argument sets as area subsets of boundary kwargs
@@ -209,15 +247,21 @@ class index():
             yields:
                 dictionary containing args as a subset of input boundaries
         """
-        if 'start' not in kwargs.keys(): kwargs['start'] = datetime(2000,1,1)
-        if 'end' not in kwargs.keys(): kwargs['end'] = kwargs['start']+dt
+        if 'start' not in kwargs.keys(): kwargs['start'] = datetime(2000, 1, 1)
+        if 'end' not in kwargs.keys(): kwargs['end'] = kwargs['start'] + dt
 
-        for axmin, axmax, delta in zip(('west','south','bottom','start'), ('east','north','top','end'), (dx,dy,dz,dt)):
+        for axmin, axmax, delta in zip(('west', 'south', 'bottom', 'start'),
+                                       ('east', 'north', 'top', 'end'),
+                                       (dx, dy, dz, dt)):
             if axmin not in kwargs.keys(): kwargs[axmin] = 0
             if axmax not in kwargs.keys(): kwargs[axmax] = 0
-            if min(kwargs[axmin],kwargs[axmax]) == max(kwargs[axmin],kwargs[axmax]): kwargs[axmax] += delta
+            if min(kwargs[axmin],
+                   kwargs[axmax]) == max(kwargs[axmin], kwargs[axmax]):
+                kwargs[axmax] += delta
 
-        spacebins = lambda a,b,delta: arange(min(a,b)-(min(a,b)%(delta*1)), max(a,b)-(max(a,b)%(delta*-1)), delta)
+        spacebins = lambda a, b, delta: arange(
+            min(a, b) - (min(a, b) % (delta * 1)),
+            max(a, b) - (max(a, b) % (delta * -1)), delta)
 
         for x in spacebins(kwargs['west'], kwargs['east'], dx):
 
@@ -225,34 +269,56 @@ class index():
 
                 for z in spacebins(kwargs['top'], kwargs['bottom'], dz):
 
-                    for t in arange(kwargs['start'].date(), kwargs['end'], dt).astype(datetime):
+                    for t in arange(kwargs['start'].date(), kwargs['end'],
+                                    dt).astype(datetime):
 
-                        yield dict(zip(('west', 'east', 'south', 'north', 'top', 'bottom', 'start', 'end',),
-                            (x, x+dx, y, y+dy, z, z+dz, t, t+dt,)))
-
+                        yield dict(
+                            zip((
+                                'west',
+                                'east',
+                                'south',
+                                'north',
+                                'top',
+                                'bottom',
+                                'start',
+                                'end',
+                            ), (
+                                x,
+                                x + dx,
+                                y,
+                                y + dy,
+                                z,
+                                z + dz,
+                                t,
+                                t + dt,
+                            )))
 
 
 class parallelindex(index):
     """ run index jobs in a parallel processing pool """
 
     def __call__(self, *, callback, **passkwargs):
-        assert len(self.kwargslist) > 1, 'nothing to parallelize when bins=False'
+        assert len(
+            self.kwargslist) > 1, 'nothing to parallelize when bins=False'
         with Pool(self.pool) as p:
-            return list(p.map(self.__call_generator__, zip((callback for _ in self.kwargslist), self.kwargslist, (passkwargs for _ in self.kwargslist))))
-
+            return list(
+                p.map(
+                    self.__call_generator__,
+                    zip((callback for _ in self.kwargslist), self.kwargslist,
+                        (passkwargs for _ in self.kwargslist))))
 
     def __call_generator__(self, args):
         callback, kwargs, passkwargs = args
         #seed=f'{callback.__module__}.{callback.__name__}:{json.dumps(passkwargs, default=str, sort_keys=True)}'
-        seed=self.hash_seed(callback, passkwargs)
-        if not self.serialized(kwargs, seed): self.insert_hash(kwargs, seed, callback(**passkwargs, **kwargs))
-        elif self.inmemory: self.update_hash(kwargs, seed, callback(**passkwargs, **kwargs))
+        seed = self.hash_seed(callback, passkwargs)
+        if not self.serialized(kwargs, seed):
+            self.insert_hash(kwargs, seed, callback(**passkwargs, **kwargs))
+        elif self.inmemory:
+            self.update_hash(kwargs, seed, callback(**passkwargs, **kwargs))
         return pickle.loads(self.serialized(kwargs, seed))
-
 
 
 '''
 class memindex(index):
     pass
 '''
-
